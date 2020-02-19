@@ -6,13 +6,17 @@
 # Mark Moraes, 20200219
 
 import os, sys, subprocess
+from datetime import datetime
 from pprint import pprint
 from collections import defaultdict
 
-def rlogparse(fnames, debug = 1):
+def rlogparse(fnames, debug = 1, timegranularity = 360.):
     """Run rlog on fnames and parse the output into a list of per-file
        RCS metadata, with a dict of metadata for each file, each containing
-       sub-dict of revision data
+       sub-dict of revision data.  Also returns a dict of revisions by date,
+       with key being the dates rounded to nearest timegranularity seconds,
+       values are list of revisions tuples, each tuple contains actual date
+       working filename, revision#, author and description.
     """
     cmd = ["/usr/bin/rlog"] + fnames
     if debug>1: print(cmd)
@@ -31,6 +35,7 @@ def rlogparse(fnames, debug = 1):
     frevs = "revs"
     fdesc = "desc"
     fdate = "date"
+    fdt = "dt"
     fauth = "author"
     kend = "============================================================================="
 
@@ -56,7 +61,10 @@ def rlogparse(fnames, debug = 1):
                     if debug>1: print("desc end:", vdesc)
                 else:
                     if debug>1: print("rev end:", vrevs[inblock])
-                    rcsbydate[vrevs[inblock][fdate]].append((vwfile,inblock,vrevs[inblock][fauth],vrevs[inblock][fdesc]))
+                    t = vrevs[inblock][fdt].timestamp()
+                    hr = int(t/timegranularity + 0.5)*timegranularity
+                    hrstr = datetime.fromtimestamp(hr)
+                    rcsbydate[hrstr].append((vrevs[inblock][fdate],vwfile,inblock,vrevs[inblock][fauth],vrevs[inblock][fdesc]))
                 inblock = None
             elif inblock != None:
                 if inblock == fdesc:
@@ -88,6 +96,7 @@ def rlogparse(fnames, debug = 1):
                 assert i >= 0, "no semicolon in "+repr(sdate)
                 sauth = sdate[i+1:].strip()
                 sdate = sdate[:i]
+                dt = datetime.strptime(sdate, '%Y/%m/%d %H:%M:%S')
                 assert sauth.startswith(kauth), "no "+kauth+" in "+repr(sauth)
                 sauth = sauth[len(kauth)+1:].strip();
                 i = sauth.find(';')
@@ -96,7 +105,7 @@ def rlogparse(fnames, debug = 1):
                 if debug>1: print(krev, vrevnum, krevdate, repr(sdate), kauth, repr(sauth))
                 inblock, vrevnum = vrevnum, None
                 assert inblock not in vrevs, repr(inblock)
-                vrevs[inblock] = {fdesc:"", fauth:sauth, fdate:sdate}
+                vrevs[inblock] = {fdesc:"", fauth:sauth, fdate:sdate, fdt:dt}
     if debug: print("read", nf, "files,", nr, "lines")
     return rcsdata, rcsbydate
 
@@ -107,7 +116,8 @@ def main():
     if 0:
         pprint(rmeta, compact=True)
     if 1:
-        pprint(rdate, compact=True)
+        for d in sorted(rdate):
+            print(d, rdate[d])
     return 0
     
 if __name__ == '__main__':
