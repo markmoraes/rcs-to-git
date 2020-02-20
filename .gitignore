@@ -1,0 +1,7 @@
+*.pyc
+*.log
+*.out
+*~
+#*
+xx*
+NOTE*
