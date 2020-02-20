@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # Run RCS rlog command on a bunch of files and parse output to extract
 # metadata.
-# Intention is to cluster that metadata into logical commits and
-# generate git commit messages.
+# Cluster that metadata into logical commits and generate git commit messages.
+#
 # Mark Moraes, 20200219
 
 import os, sys, subprocess
@@ -104,38 +104,60 @@ def rlogparse(fnames, debug = 0):
     if debug: print("read", nf, "files,", nr, "lines")
     return rcsmeta
 
-def rcscluster(rcsmeta, timegranularity, debug = 0):
+# Reasonable clustering of RCS revisions into commits is tricky: we try to find
+# big separations by time as the obvious demarcation (> 1 hr), or a change of
+# author, or the same file already exists in the cluster, or
+# a medium separation of time (between smalltimesep and bigtimesep)
+# with the same description or revision#?
+def rcscluster(rcsmeta, smalltimesep = 10, bigtimesep = 3600, debug = 0):
     """Also returns a dict of revisions by date,
        with key being the dates rounded to nearest timegranularity seconds,
        values are list of revisions tuples, each tuple contains actual date
        working filename, revision#, author and description.
      """
-    revsbydate = defaultdict(list)
-    files = defaultdict(dict)
+    # first make a flat list of all revisions of all files that we can sort by time
+    revsbydate = []
+    mintime = sys.float_info.max
     for f in rcsmeta:
         vrfile = f[frfile]
         vwfile = f[fwfile]
         vrevs = f[frevs]
-        for r in vrevs:
-            rinfo = vrevs[r]
-            t = rinfo[fdt].timestamp()
-            hr = int(t/timegranularity + 0.5)*timegranularity
-            hrstr = datetime.fromtimestamp(hr).isoformat()
-            rkey = (hrstr,rinfo[fauth])
-            if vrfile in files[rkey]:
-                raise RuntimeError("file "+vrfile+" already in "+repr(rkey)+" : "+repr(files[rkey][vrfile])+"\n"+repr(rinfo)+"\nMaybe try lowering GRANULARITY")
-            files[rkey][vrfile] = rinfo
-            revsbydate[rkey].append((rinfo[fdate],vrfile,r,vwfile,rinfo[fdesc]))
-    rcscommits = {}
-    for c in sorted(revsbydate):
-        commit = [[], []]
-        revs = revsbydate[c]
-        for r in sorted(revs):
-            vdesc = r[-1]
-            if vdesc.strip().lower() not in descskip and vdesc not in commit[0]:
-                commit[0].append(vdesc)
-            commit[1].append(r[:-1])
-        rcscommits[c] = commit
+        for rev in vrevs:
+            rinfo = vrevs[rev]
+            revtime = rinfo[fdt].timestamp()
+            mintime = min(mintime, revtime)
+            revsbydate.append((revtime, rinfo[fauth], rinfo[fdate], vrfile, rev, vwfile, rinfo[fdesc]))
+    # sort by time
+    rcscommits = []
+    prevtime = mintime
+    prevauth = prevdate = prevdesc = prevrev = commit = None
+    files = set()
+    for revtime, revauth, revdate, vrfile, rev, vwfile, revdesc in sorted(revsbydate):
+        dt = revtime - prevtime
+        if debug: print(dt, revauth, prevauth, vrfile, vrfile in files, repr(revdesc), repr(prevdesc), rev, prevrev)
+        if revauth != prevauth or vrfile in files or \
+            (dt > bigtimesep or \
+             (dt > smalltimesep and \
+              revdesc != prevdesc and rev != prevrev)):
+            if prevauth:
+                if debug: print("commit", repr((prevauth, prevdate, commit)))
+                rcscommits.append((prevauth, prevdate, commit))
+            prevauth = revauth
+            prevdate = revdate
+            files = set()
+            descs = set()
+            commit = [[], []]
+        prevtime = revtime
+        prevdesc = revdesc
+        prevrev = rev
+        files.add(vrfile)
+        canondesc = revdesc.strip().lower()
+        if canondesc not in descskip and canondesc not in descs:
+            commit[0].append(vwfile + ": "+ revdesc)
+            descs.add(canondesc)
+        commit[1].append((revdate, vrfile, rev, vwfile))
+    if prevauth:
+        rcscommits.append((prevauth, prevdate, commit))
     return rcscommits
 
 def main():
@@ -145,8 +167,8 @@ def main():
     if 0:
         pprint(rmeta, compact=True)
     rdate = rcscluster(rmeta, float(os.getenv("GRANULARITY", "600")))
-    for d in sorted(rdate):
-        pprint((d, rdate[d]), width=os.get_terminal_size(0).columns)
+    for d in rdate:
+        pprint(d, width=os.get_terminal_size(0).columns)
     return 0
     
 if __name__ == '__main__':
